@@ -3,8 +3,6 @@ from __future__ import annotations
 from statistics import mean
 from typing import Dict, List
 
-import numpy as np
-
 from src.config import ZONE_AREAS_KM2, ZONES
 from src.data import BuildingRecord
 from src.schemas import QueryRequest
@@ -45,7 +43,18 @@ class ResponseEngine:
     def q5_confidence_dist(self, zone_id: str, bins: int = 5) -> list:
         # Q5: histograma de confianza en una zona.
         scores = [r.confidence for r in self.data[zone_id]]
-        counts, edges = np.histogram(scores, bins=bins, range=(0, 1))
+        # Implement histogram without numpy to avoid an extra dependency.
+        # Edges are evenly spaced in [0,1]. Counts assign score==1.0 to the last bin.
+        edges = [i / bins for i in range(bins + 1)]
+        counts = [0 for _ in range(bins)]
+        for s in scores:
+            if s < 0 or s > 1:
+                continue
+            idx = int(s * bins)
+            if idx >= bins:
+                idx = bins - 1
+            counts[idx] += 1
+
         return [
             {
                 "bucket": i,
