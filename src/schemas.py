@@ -1,22 +1,41 @@
 from __future__ import annotations
 
-from typing import Literal, Optional
+from dataclasses import dataclass, asdict
+from typing import Literal, Optional, Any, Dict
 
-from pydantic import BaseModel, Field
 
-
-class QueryRequest(BaseModel):
+@dataclass
+class QueryRequest:
     # Payload de consultas Q1-Q5 con parametros de zona y confianza.
-    query_type: Literal["Q1", "Q2", "Q3", "Q4", "Q5"]
+    query_type: str
     zone_id: Optional[str] = None
     zone_id_a: Optional[str] = None
     zone_id_b: Optional[str] = None
-    confidence_min: float = Field(default=0.0, ge=0.0, le=1.0)
-    bins: int = Field(default=5, ge=1, le=100000)
+    confidence_min: float = 0.0
+    bins: int = 5
+
+    @staticmethod
+    def model_validate(payload: Any) -> "QueryRequest":
+        if isinstance(payload, QueryRequest):
+            return payload
+        if isinstance(payload, dict):
+            return QueryRequest(
+                query_type=payload.get("query_type"),
+                zone_id=payload.get("zone_id"),
+                zone_id_a=payload.get("zone_id_a"),
+                zone_id_b=payload.get("zone_id_b"),
+                confidence_min=float(payload.get("confidence_min", 0.0)),
+                bins=int(payload.get("bins", 5)),
+            )
+        raise TypeError("Unsupported payload type for model_validate")
+
+    def model_dump(self) -> Dict[str, Any]:
+        return asdict(self)
 
 
-class MetricEvent(BaseModel):
+@dataclass
+class MetricEvent:
     # Eventos de cache para hit/miss y eviccion.
-    event_type: Literal["hit", "miss", "eviction"]
+    event_type: str
     query_type: str
-    latency_ms: float = Field(ge=0.0)
+    latency_ms: float = 0.0
