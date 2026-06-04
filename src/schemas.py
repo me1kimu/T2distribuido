@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from __future__ import annotations
+
 from typing import Literal, Optional
 
 from pydantic import BaseModel, Field
@@ -17,6 +19,7 @@ class QueryRequest(BaseModel):
 
 class MetricEvent(BaseModel):
     # Eventos de cache para hit/miss y eviccion.
-    event_type: Literal["hit", "miss", "eviction"]
+    event_type: Literal["hit", "miss", "eviction", "retry", "recovery", "dlq"]
     query_type: str
     latency_ms: float = Field(ge=0.0)
+    retry_count: int = Field(default=0, ge=0)

@@ -46,6 +46,7 @@ class ResponseEngine:
         # Q5: histograma de confianza en una zona.
         scores = [r.confidence for r in self.data[zone_id]]
         counts, edges = np.histogram(scores, bins=bins, range=(0, 1))
+
         return [
             {
                 "bucket": i,

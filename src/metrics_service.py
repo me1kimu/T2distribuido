@@ -18,9 +18,15 @@ class MetricsRegistry:
         self._hits = 0
         self._misses = 0
         self._evictions = 0
+        self._retries = 0
+        self._recoveries = 0
+        self._dlqs = 0
         self._latencies: List[float] = []
         self._latencies_hit: List[float] = []
         self._latencies_miss: List[float] = []
+        self._latencies_retry: List[float] = []
+        self._latencies_recovery: List[float] = []
+        self._latencies_dlq: List[float] = []
         self._by_query: Dict[str, int] = defaultdict(int)
 
     def record(self, event: MetricEvent) -> None:
@@ -36,6 +42,15 @@ class MetricsRegistry:
                 self._latencies_miss.append(event.latency_ms)
             elif event.event_type == "eviction":
                 self._evictions += 1
+            elif event.event_type == "retry":
+                self._retries += 1
+                self._latencies_retry.append(event.latency_ms)
+            elif event.event_type == "recovery":
+                self._recoveries += 1
+                self._latencies_recovery.append(event.latency_ms)
+            elif event.event_type == "dlq":
+                self._dlqs += 1
+                self._latencies_dlq.append(event.latency_ms)
 
     @staticmethod
     def _percentile(values: List[float], pct: float) -> float:
@@ -52,24 +67,37 @@ class MetricsRegistry:
             uptime = max(time.time() - self._started_at, 1e-6)
             hit_rate = self._hits / total if total else 0.0
             miss_rate = self._misses / total if total else 0.0
+            retry_rate = self._retries / total if total else 0.0
+            recovery_rate = self._recoveries / total if total else 0.0
+            dlq_rate = self._dlqs / total if total else 0.0
             throughput = total / uptime
             evictions_per_min = self._evictions / (uptime / 60)
             p50 = median(self._latencies) if self._latencies else 0.0
             p95 = self._percentile(self._latencies, 0.95)
             avg_hit = sum(self._latencies_hit) / len(self._latencies_hit) if self._latencies_hit else 0.0
             avg_miss = sum(self._latencies_miss) / len(self._latencies_miss) if self._latencies_miss else 0.0
+            avg_recovery = sum(self._latencies_recovery) / len(self._latencies_recovery) if self._latencies_recovery else 0.0
+            backlog_estimate = max(self._retries - self._recoveries - self._dlqs, 0)
             cache_efficiency = ((self._hits * avg_hit) - (self._misses * avg_miss)) / total if total else 0.0
             return {
                 "hits": self._hits,
                 "misses": self._misses,
                 "evictions": self._evictions,
+                "retries": self._retries,
+                "recoveries": self._recoveries,
+                "dlqs": self._dlqs,
                 "hit_rate": hit_rate,
                 "miss_rate": miss_rate,
+                "retry_rate": retry_rate,
+                "recovery_rate": recovery_rate,
+                "dlq_rate": dlq_rate,
                 "throughput_qps": throughput,
                 "latency_ms_p50": p50,
                 "latency_ms_p95": p95,
+                "recovery_latency_ms_avg": avg_recovery,
                 "eviction_rate_per_min": evictions_per_min,
                 "cache_efficiency": cache_efficiency,
+                "backlog_estimate": backlog_estimate,
                 "queries_by_type": dict(self._by_query),
             }
 
