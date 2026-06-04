@@ -1,0 +1,238 @@
+\documentclass[letter,12pt]{article}
+\usepackage[paperheight=27.94cm,paperwidth=21.59cm,bindingoffset=0in,left=3cm,right=2.0cm,top=3.5cm,bottom=2.5cm,headheight=200pt,headsep=1.0\baselineskip]{geometry}
+\usepackage[spanish,es-tabla]{babel}
+\usepackage[utf8]{inputenc}
+\usepackage{graphicx}
+\usepackage{tabularx}
+\usepackage{adjustbox}
+\usepackage{xcolor}
+\usepackage{colortbl}
+\usepackage{rotating}
+\usepackage{multirow}
+\usepackage{float}
+\usepackage{hyperref}
+\usepackage{listings}
+\usepackage{fancyhdr}
+\usepackage{lastpage}
+\usepackage{upgreek}
+\usepackage{censor}
+\usepackage{pdfpages}
+
+\definecolor{codegreen}{rgb}{0,0.6,0}
+\definecolor{codegray}{rgb}{0.5,0.5,0.5}
+\definecolor{codepurple}{rgb}{0.58,0,0.82}
+\definecolor{backcolour}{rgb}{0.95,0.95,0.92}
+
+\lstdefinestyle{mystyle}{
+    backgroundcolor=\color{backcolour},
+    commentstyle=\color{codegreen},
+    keywordstyle=\color{magenta},
+    numberstyle=\tiny\color{codegray},
+    stringstyle=\color{codepurple},
+    basicstyle=\ttfamily\footnotesize,
+    breakatwhitespace=false,
+    breaklines=true,
+    captionpos=b,
+    keepspaces=true,
+    numbers=left,
+    numbersep=5pt,
+    showspaces=false,
+    showstringspaces=false,
+    showtabs=false,
+    tabsize=2
+}
+
+\lstset{style=mystyle}
+\renewcommand{\tablename}{Tabla}
+\pagestyle{fancy}
+
+\begin{document}
+
+\title{\Huge{Tarea 2 Sistemas Distribuidos} \\
+\large Procesamiento y Fallback con Apache Kafka}
+\author{\\Camilo Rojas, camilo.rojas2@mail.udp.cl\\Mat\'ias Rivera, matias.rivera\_s@mail.udp.cl \\ \\ \textbf{Profesor: } Nicol\'as Hidalgo}
+\date{Junio, 2026}
+\maketitle
+
+\tableofcontents
+\newpage
+
+\section{Introducci\'on}
+La segunda entrega del proyecto extiende la arquitectura distribuida desarrollada en la Tarea 1 para introducir procesamiento as\'incrono, tolerancia a fallos y desacoplamiento mediante Apache Kafka. El sistema sigue operando sobre el dataset Google Open Buildings v3 y conserva los servicios base de la primera entrega: generador de tr\'afico, servicio de cach\'e, generador de respuestas y servicio de m\'etricas. La diferencia central es que el ingreso y procesamiento de consultas ya no depende exclusivamente de un flujo sincr\'onico directo, sino de una cola principal de Kafka y de un esquema de reintentos y DLQ para manejar fallas temporales.
+
+El objetivo funcional de esta versi\'on es evitar la p\'erdida inmediata de consultas ante sobrecarga o indisponibilidad parcial del servicio de respuestas, permitiendo que las peticiones se reintenten autom\'aticamente y que las consultas no recuperables sean derivadas a una Dead Letter Queue. En paralelo, se instrumenta la observabilidad del sistema con m\'etricas de throughput, latencia, retry rate, recovery rate, DLQ rate y backlog estimado, lo que permite evaluar el comportamiento del sistema en escenarios de carga y falla.
+
+\section{Objetivos y Alcance}
+Los requerimientos abordados en el c\'odigo de este repositorio son:
+\begin{itemize}
+    \item Incorporar Apache Kafka como intermediario entre la producci\'on de consultas y su procesamiento.
+    \item Implementar una estrategia de reintentos con un n\'umero m\'aximo de intentos y una cola DLQ.
+    \item Permitir la ejecuci\'on de m\'ultiples consumidores pertenecientes al mismo grupo de consumo.
+    \item Mantener el sistema de cach\'e como capa base de aceleraci\'on, aunque ya no como foco principal del experimento.
+    \item Registrar m\'etricas de hit/miss, latencia, retries, recovery y eventos de fallo.
+    \item Desplegar el stack completo con Docker Compose.
+\end{itemize}
+
+El alcance de este informe es doble: documenta la arquitectura y el desarrollo implementado, y adem\'as deja descrita la metodolog\'ia de validaci\'on y evaluaci\'on esperada seg\'un el enunciado del hito.
+
+\section{Dise\~no de la Arquitectura}
+\subsection{Visi\'on General}
+La soluci\'on se organiza como una arquitectura de servicios desacoplados desplegados con Docker Compose:
+\begin{itemize}
+    \item \textbf{Zookeeper}: coordina el estado del broker Kafka.
+    \item \textbf{Kafka}: mantiene el t\'opico principal de consultas, el t\'opico de reintento y la DLQ.
+    \item \textbf{Redis}: almac\'en de respuestas cacheadas.
+    \item \textbf{Metrics Service}: recibe eventos de hit, miss, retry, recovery, eviction y DLQ.
+    \item \textbf{Response Service}: calcula las consultas Q1--Q5 sobre el dataset cargado en memoria.
+    \item \textbf{Cache Service}: expone un flujo sincr\'onico base equivalente al de la Tarea 1 y reporta m\'etricas.
+    \item \textbf{Consumer}: consume consultas desde Kafka, consulta cach\'e y delega al servicio de respuestas cuando es necesario.
+    \item \textbf{Producer}: publica consultas puntuales en el t\'opico principal de Kafka.
+    \item \textbf{Traffic Generator}: genera carga sint\'etica bajo distribuciones uniforme y Zipf.
+\end{itemize}
+
+El flujo principal del sistema Kafka queda resumido as\'i:
+\begin{center}
+Tr\'afico $\rightarrow$ Kafka Producer $\rightarrow$ T\'opico principal $\rightarrow$ Consumer $\rightarrow$ Redis $\rightarrow$ Response Service $\rightarrow$ Redis / M\'etricas
+\end{center}
+
+Cuando el procesamiento falla temporalmente, el Consumer incrementa el contador de reintentos y reenv\'ia la consulta al t\'opico de reintento. Si el contador alcanza el l\'imite configurado, la consulta se deriva a la DLQ.
+
+\subsection{Contratos de Mensaje}
+Cada consulta procesada por Kafka transporta un envoltorio con los siguientes campos:
+\begin{itemize}
+    \item \texttt{query\_id}: identificador \'{u}nico.
+    \item \texttt{retry\\_count}: n\'umero de reintentos acumulados.
+    \item \texttt{created\_at}: timestamp de creaci\'on.
+    \item \texttt{query} o equivalentes: payload de la consulta Q1--Q5.
+\end{itemize}
+
+El consumidor fue implementado para tolerar distintas formas de envoltorio, admitiendo tambi\'en campos como \texttt{payload}, \texttt{request}, \texttt{data} o \texttt{query}. Esto facilita la interoperabilidad con un eventual productor separado o con herramientas de generaci\'on de tr\'afico distintas.
+
+\subsection{Servicios de Soporte}
+El servicio de respuestas carga el dataset una sola vez al iniciar. La descarga se reanuda si existe un archivo parcial, lo que reduce el costo de reiniciar el entorno. Las consultas Q1--Q5 se resuelven en memoria mediante la clase \texttt{ResponseEngine}, evitando depender de una base de datos externa durante la ejecuci\'on.
+
+El servicio de m\'etricas centraliza la observabilidad de eventos. A diferencia de la versi\'on de Tarea 1, aqu\'i se agregan contadores de reintento, recuperaci\'on y DLQ, adem\'as de hit/miss y evicciones. Con esto se puede cuantificar el comportamiento bajo falla temporal y calcular un backlog estimado a partir de la diferencia entre reintentos emitidos y eventos de recuperaci\'on o descarte.
+
+\section{Implementaci\'on}
+\subsection{Tecnolog\'ias Utilizadas}
+\begin{itemize}
+    \item \textbf{Python 3.12}: lenguaje principal de implementaci\'on.
+    \item \textbf{FastAPI}: exposici\'on HTTP de los servicios de cach\'e, respuestas y m\'etricas.
+    \item \textbf{aiokafka} y \textbf{kafka-python}: clientes Kafka as\'incronos y sincr\'onicos seg\'un el componente.
+    \item \textbf{Redis}: almacenamiento de respuestas cacheadas con TTL.
+    \item \textbf{httpx}: comunicaci\'on HTTP entre servicios.
+    \item \textbf{Docker y Docker Compose}: orquestaci\'on del stack completo.
+\end{itemize}
+
+\subsection{Publicaci\'on de Consultas}
+El productor can\'onico est\'a implementado en \texttt{src/producer.py}. Usa \texttt{KafkaProducer} con \texttt{acks=all} y reintentos de broker para asegurar persistencia razonable del mensaje antes de declararlo publicado. El payload enviado contiene un identificador \'{u}nico, el timestamp y la consulta serializada como diccionario.
+
+El generador de tr\'afico en \texttt{src/traffic\_generator\_kafka.py} produce consultas Q1--Q5. La selecci\'on de zonas usa una distribuci\'on uniforme o Zipf. Para Q4 se eligen dos zonas distintas y para Q5 se incluyen los bins del histograma. Este generador est\'a dise\~nado para simular patrones repetitivos y zonas calientes, que son relevantes para observar el efecto del cach\'e.
+
+\subsection{Consumo, Cach\'e y Reintentos}
+El consumidor en \texttt{src/consumer.py} procesa mensajes desde el t\'opico principal y tambi\'en desde el t\'opico de reintento. Primero valida y decodifica el mensaje. Luego construye la clave de cach\'e con \texttt{build\_cache\_key}, consulta Redis y, si encuentra un hit, reporta la latencia y termina el procesamiento.
+
+Si hay miss, el consumidor llama al servicio de respuestas. Si esta llamada es exitosa, guarda el resultado en Redis con el TTL configurado y env\'ia una m\'etrica de miss. Si ocurre una excepci\'on temporal, incrementa el contador de reintentos, emite una m\'etrica \texttt{retry} y reenv\'ia el mensaje al t\'opico de reintento. Cuando el contador alcanza \texttt{MAX\_RETRIES}, el mensaje pasa a la DLQ y tambi\'en se reporta con una m\'etrica \texttt{dlq}. Si la consulta se recupera despu\'es de uno o m\'as reintentos, se reporta una m\'etrica \texttt{recovery}.
+
+El c\'odigo tambi\'en fue ajustado para manejar fallas de arranque de Kafka de manera limpia: si el broker no est\'a disponible, el consumidor termina con c\'odigo 1 y sin dejar productores o consumidores abiertos.
+
+\subsection{Servicio de Respuestas}
+\texttt{src/response\_service.py} recibe consultas tipadas con Pydantic y las delega al motor \texttt{ResponseEngine}. Las consultas soportadas son:
+\begin{itemize}
+    \item \textbf{Q1}: conteo de edificios por zona y umbral de confianza.
+    \item \textbf{Q2}: promedio, suma y cardinalidad del \'area de edificios.
+    \item \textbf{Q3}: densidad de edificios por km$^2$.
+    \item \textbf{Q4}: comparaci\'on de densidad entre dos zonas.
+    \item \textbf{Q5}: histograma de confianza con bins configurables.
+\end{itemize}
+
+El motor calcula Q5 con \texttt{numpy.histogram}, y la validaci\'on de zonas se apoya en el cat\'alogo fijo de zonas de la Regi\'on Metropolitana definido en \texttt{src/config.py}. La implementaci\'on de esta capa cumple con el requerimiento de mantener el dataset precargado en memoria.
+
+\subsection{Servicio de M\'etricas}
+\texttt{src/metrics\_service.py} recibe eventos de tipo hit, miss, eviction, retry, recovery y dlq. El resumen agregado incluye:
+\begin{itemize}
+    \item throughput en consultas exitosas por segundo,
+    \item latencia p50 y p95,
+    \item retry rate,
+    \item recovery rate,
+    \item DLQ rate,
+    \item backlog estimado,
+    \item distribuci\'on de consultas por tipo.
+\end{itemize}
+
+Aunque el backlog real de Kafka requiere una lectura directa de offsets, el sistema implementado produce una estimaci\'on derivada de los eventos instrumentados, que es suficiente para seguir el comportamiento relativo entre escenarios durante la validaci\'on funcional. Para una campa\~na experimental final, esta estimaci\'on puede complementarse con la lectura de offsets consumidos y pendientes por partici\'on.
+
+\subsection{Despliegue}
+El archivo \texttt{docker-compose.yml} levanta el stack completo con:
+\begin{itemize}
+    \item Zookeeper y Kafka con im\'agenes Confluent est\'andar,
+    \item Redis 7,
+    \item Metrics Service,
+    \item Response Service con volumen persistente para el dataset,
+    \item Cache Service,
+    \item Consumer,
+    \item Producer,
+    \item Traffic Generator Kafka.
+\end{itemize}
+
+La configuraci\'on fue validada con \texttt{docker compose config}. Adem\'as, el proyecto mantiene wrappers delgados en la ra\'iz para no romper invocaciones antiguas, aunque la implementaci\'on can\'onica vive dentro del paquete \texttt{src}.
+
+\section{Metodolog\'ia de Evaluaci\'on}
+El enunciado solicita comparar el comportamiento del sistema en varios escenarios. La metodolog\'ia propuesta para este proyecto es la siguiente:
+\begin{enumerate}
+    \item \textbf{Sistema base}: ejecuci\'on sin Kafka, usando el flujo sincr\'onico de la Tarea 1.
+    \item \textbf{Kafka + 1 consumer}: medir throughput y latencia con un solo consumidor.
+    \item \textbf{Kafka + m\'ultiples consumers}: repetir las mediciones aumentando el n\'umero de consumidores y observando el escalamiento.
+    \item \textbf{Falla temporal}: detener o degradar temporalmente el servicio de respuestas para provocar reintentos.
+    \item \textbf{Spike de tr\'afico}: aumentar bruscamente la tasa de env\'io con el generador.
+    \item \textbf{Recuperaci\'on}: comparar la p\'erdida de consultas entre el sistema sin Kafka y el basado en cola.
+\end{enumerate}
+
+Las m\'etricas que deben reportarse en cada escenario son las indicadas por el enunciado: throughput, latencia p50/p95, retry rate, recovery rate, DLQ rate, backlog size y recovery time. El sistema ya expone la mayor parte de estas magnitudes por medio del servicio de m\'etricas, por lo que la ejecuci\'on experimental solo requiere automatizar la consulta al endpoint \texttt{/summary} y consolidar resultados por corrida.
+
+\section{Validaci\'on Funcional Obtenida}
+
+\begin{itemize}
+    \item La suite de pruebas autom\'aticas pasa completamente: 7 pruebas exitosas.
+    \item \texttt{docker compose config} resuelve correctamente el stack completo.
+    \item El consumidor termina de manera limpia cuando Kafka no est\'a disponible, sin dejar productores o consumidores abiertos.
+    \item El despliegue levanta los contenedores principales: Kafka, Zookeeper, Redis, servicios web, consumidor, productor y generador de tr\'afico.
+\end{itemize}
+
+Esta validaci\'on confirma que la infraestructura requerida por el enunciado est\'a operativa y lista para correr campa\~nas de carga o fallas temporales.
+
+\section{Discusi\'on}
+\subsection{Impacto de Kafka respecto de la arquitectura sincr\'onica}
+La principal diferencia conceptual es el desacoplamiento. En la arquitectura original, el emisor de la consulta depend\'ia del tiempo de procesamiento del servicio de cach\'e y del generador de respuestas. Si el servicio de respuestas se demoraba o ca\'ia, el usuario sufr\'ia la latencia completa o una falla directa. Con Kafka, la consulta se admite primero en una cola persistente y luego los consumidores la procesan cuando disponen de capacidad. Esto mejora tolerancia a fallos y absorci\'on de picos, pero introduce latencia adicional por encolamiento y mayor complejidad operacional.
+
+\subsection{Impacto de los reintentos}
+Los reintentos disminuyen la p\'erdida de consultas frente a fallas temporales, porque una falla de procesamiento no implica descarte inmediato. Sin embargo, si el sistema se encuentra muy cargado, los reintentos tambi\'en pueden incrementar la presi\'on sobre Kafka y elevar la latencia total. El beneficio real aparece cuando la falla es transitoria: el mensaje logra recuperarse sin que el usuario o la aplicaci\'on de origen deba reenviarlo manualmente.
+
+\subsection{Efecto de m\'ultiples consumidores}
+El uso de varios consumidores con el mismo grupo de consumo permite repartir particiones y aumentar el throughput total, especialmente cuando existen varias consultas independientes en paralelo. El escalamiento no es lineal indefinidamente: cuando aparecen l\'imites de CPU, red, Redis o del servicio de respuestas, el beneficio marginal se reduce. Aun as\'i, el dise\~no es el correcto para el requerimiento de escalamiento horizontal.
+
+\subsection{Backlog bajo carga o fallas}
+El backlog crece cuando la producci\'on supera la capacidad de consumo o cuando el servicio de respuestas no puede atender a tiempo. En esta implementaci\'on Kafka act\'ua como buffer de absorci\'on. Eso evita p\'erdida de consultas, pero desplaza la presi\'on temporalmente hacia la cola. La interpretaci\'on correcta del backlog es que representa resiliencia, aunque un backlog sostenido y creciente es se\~nal de saturaci\'on.
+
+\subsection{Ventajas y desventajas de la arquitectura basada en colas}
+Entre las ventajas destacan el desacoplamiento, la resiliencia ante fallas temporales, la posibilidad de escalar consumidores y la visibilidad del flujo mediante m\'etricas. Entre las desventajas est\'an la mayor complejidad del despliegue, la necesidad de orquestar brokers y t\'opicos, la latencia adicional por encolamiento y la trazabilidad m\'as compleja de cada consulta a lo largo del sistema.
+
+\section{Conclusiones}
+Se desarroll\'o una versi\'on as\'incrona y desacoplada de la plataforma del curso, incorporando Apache Kafka como mecanismo principal de mensajer\'ia, reintentos y tolerancia a fallos. El sistema conserva el valor de la cach\'e como acelerador, pero ya no depende de un flujo estrictamente sincr\'onico para procesar consultas. Adem\'as, el proyecto ahora cuenta con una base de observabilidad m\'as rica, que registra hit/miss, latencia, reintentos, recuperaci\'on y DLQ.
+
+A nivel de ingenier\'ia, el stack ya queda listo para realizar campa\~nas de evaluaci\'on experimental con distintos n\'umeros de consumidores y bajo escenarios de sobrecarga o falla temporal. La validaci\'on funcional actual confirma que la arquitectura es ejecutable, reproducible y compatible con Docker Compose.
+
+\section{Referencias}
+\begin{itemize}
+    \item Apache Kafka Documentation: \url{https://kafka.apache.org/documentation/}
+    \item FastAPI Documentation: \url{https://fastapi.tiangolo.com/}
+    \item Redis Documentation: \url{https://redis.io/docs/}
+    \item Google Open Buildings Dataset: \url{https://sites.research.google/open-buildings/}
+\end{itemize}
+
+\section*{Links}
+\begin{enumerate}
+    \item Repositorio de GitHub y vídeo de demostración: \url{https://github.com/me1kimu/T2distribuido}.
+\end{enumerate}
+
+\end{document}

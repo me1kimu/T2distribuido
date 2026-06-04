@@ -3,8 +3,10 @@ import asyncio
 import time
 import httpx
 import logging
+import sys
 import redis.asyncio as aioredis  # type: ignore
 from aiokafka import AIOKafkaConsumer  # type: ignore
+from aiokafka.errors import KafkaConnectionError
 from src.consumer_config import (
     KAFKA_BOOTSTRAP_SERVERS,
     KAFKA_TOPIC,
@@ -119,27 +121,46 @@ async def process_message(msg_value, redis_client, retry_handler):
 
 
 async def run():
-    consumer = AIOKafkaConsumer(
-        KAFKA_TOPIC, 
-        RETRY_TOPIC, 
-        bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS, 
-        group_id=CONSUMER_GROUP, 
-        auto_offset_reset="earliest",
-        enable_auto_commit=False
-    )
     redis_client = aioredis.from_url(REDIS_URL)
     retry_handler = RetryHandler()
-    await retry_handler.start()
-    await consumer.start()
+    consumer = None
+    retry_started = False
+    consumer_started = False
     
     try:
+        await retry_handler.start()
+        retry_started = True
+
+        consumer = AIOKafkaConsumer(
+            KAFKA_TOPIC,
+            RETRY_TOPIC,
+            bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,
+            group_id=CONSUMER_GROUP,
+            auto_offset_reset="earliest",
+            enable_auto_commit=False,
+        )
+        await consumer.start()
+        consumer_started = True
+
         async for msg in consumer:
             await process_message(msg.value.decode("utf-8"), redis_client, retry_handler)
             await consumer.commit()
+    except Exception as exc:
+        logger.error("No se pudo iniciar el consumidor Kafka: %s", exc)
+        raise
     finally:
-        await consumer.stop()
-        await retry_handler.stop()
+        if consumer_started and consumer is not None:
+            await consumer.stop()
+        if retry_started:
+            await retry_handler.stop()
+
+
+def main() -> None:
+    try:
+        asyncio.run(run())
+    except KafkaConnectionError:
+        sys.exit(1)
 
 
 if __name__ == "__main__":
-    asyncio.run(run())
+    main()
