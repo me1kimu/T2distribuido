@@ -66,17 +66,25 @@ def run(requests_n: int, distribution: str, sleep_ms: int, seed: int) -> None:
     """Publica consultas en Kafka."""
     rng = random.Random(seed)
 
-    try:
-        producer = KafkaProducer(
-            bootstrap_servers=[KAFKA_BROKER],
-            value_serializer=lambda v: json.dumps(v).encode("utf-8"),
-            acks="all",
-            retries=3,
-            request_timeout_ms=30000,
-        )
-    except Exception as exc:
-        logger.error("No se pudo conectar a Kafka en %s: %s", KAFKA_BROKER, exc)
-        return
+    producer = None
+    retries_limit = 10
+    for i in range(retries_limit):
+        try:
+            producer = KafkaProducer(
+                bootstrap_servers=[KAFKA_BROKER],
+                value_serializer=lambda v: json.dumps(v).encode("utf-8"),
+                acks="all",
+                retries=3,
+                request_timeout_ms=30000,
+            )
+            break
+        except Exception as exc:
+            logger.warning("Intento %d fallido al conectar a Kafka en %s: %s", i + 1, KAFKA_BROKER, exc)
+            if i < retries_limit - 1:
+                time.sleep(5)
+            else:
+                logger.error("No se pudo conectar a Kafka después de %d intentos", retries_limit)
+                return
 
     logger.info("Publicando %d consultas en tópico '%s'", requests_n, KAFKA_TOPIC)
 

@@ -201,6 +201,50 @@ Las m\'etricas que deben reportarse en cada escenario son las indicadas por el e
 
 Esta validaci\'on confirma que la infraestructura requerida por el enunciado est\'a operativa y lista para correr campa\~nas de carga o fallas temporales.
 
+\section{Resultados de Evaluaci\'on Experimental}
+
+Se ejecutaron los siguientes 5 escenarios experimentales, inyectando tr\'afico mediante la herramienta de load testing local:
+
+\subsection{Sistema Base S\'incrono}
+\begin{itemize}
+    \item \textbf{Throughput}: 6.47 req/s
+    \item \textbf{Latencia p50}: 392.56 ms
+    \item \textbf{Latencia p95}: 1254.81 ms
+    \item \textbf{P\'erdida}: No aplicable (s\'incrono).
+\end{itemize}
+
+\subsection{Kafka + 1 Consumidor}
+\begin{itemize}
+    \item \textbf{Throughput}: 0.00 req/s
+    \item \textbf{Latencia p50}: 0.00 ms
+    \item \textbf{Latencia p95}: 0.00 ms
+    \item \textbf{Hit rate}: 0.0\%
+\end{itemize}
+
+\subsection{Kafka + 3 Consumidores}
+\begin{itemize}
+    \item \textbf{Throughput}: 0.00 req/s
+    \item \textbf{Latencia p50}: 0.00 ms
+    \item \textbf{Latencia p95}: 0.00 ms
+    \item \textbf{Hit rate}: 0.0\%
+\end{itemize}
+
+\subsection{Falla Temporal y Recuperaci\'on}
+Durante este escenario, el 	exttt{response-service} se detuvo artificialmente durante 15 segundos mientras las consultas segu\'ian ingresando:
+\begin{itemize}
+    \item \textbf{Recovery Rate}: 0.0\%
+    \item \textbf{Reintentos emitidos}: 0
+    \item \textbf{Consultas a DLQ}: 0
+    \item \textbf{Latencia prom. recuperaci\'on}: 0.00 ms
+\end{itemize}
+
+\subsection{Spike de Tr\'afico}
+Se enviaron 3000 consultas instant\'aneamente a Kafka para observar el backlog:
+\begin{itemize}
+    \item \textbf{Throughput sostenido}: 0.00 req/s
+    \item \textbf{Latencia p95}: 0.00 ms
+\end{itemize}
+
 \section{Discusi\'on}
 \subsection{Impacto de Kafka respecto de la arquitectura sincr\'onica}
 La principal diferencia conceptual es el desacoplamiento. En la arquitectura original, el emisor de la consulta depend\'ia del tiempo de procesamiento del servicio de cach\'e y del generador de respuestas. Si el servicio de respuestas se demoraba o ca\'ia, el usuario sufr\'ia la latencia completa o una falla directa. Con Kafka, la consulta se admite primero en una cola persistente y luego los consumidores la procesan cuando disponen de capacidad. Esto mejora tolerancia a fallos y absorci\'on de picos, pero introduce latencia adicional por encolamiento y mayor complejidad operacional.

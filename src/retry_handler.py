@@ -9,15 +9,30 @@ class RetryHandler:
         self._started = False
 
     async def start(self):
-        try:
-            await self._producer.start()
-        except Exception:
+        import asyncio
+        from aiokafka.errors import KafkaConnectionError
+        
+        retries = 10
+        for i in range(retries):
             try:
-                await self._producer.stop()
+                await self._producer.start()
+                self._started = True
+                return
+            except KafkaConnectionError as e:
+                if i < retries - 1:
+                    await asyncio.sleep(5)
+                else:
+                    try:
+                        await self._producer.stop()
+                    except Exception:
+                        pass
+                    raise
             except Exception:
-                pass
-            raise
-        self._started = True
+                try:
+                    await self._producer.stop()
+                except Exception:
+                    pass
+                raise
 
     async def stop(self):
         if self._started:

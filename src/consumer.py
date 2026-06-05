@@ -15,6 +15,7 @@ from src.consumer_config import (
     CONSUMER_GROUP,
     REDIS_URL,
     RESPONSE_SERVICE_URL,
+    METRICS_SERVICE_URL,
     MAX_RETRIES,
     CACHE_TTL,
 )
@@ -55,7 +56,7 @@ def _metric(event_type: str, query_type: str, latency_ms: float, retry_count: in
         payload["retry_count"] = retry_count
     return payload
 
-async def process_message(msg_value, redis_client, retry_handler):
+async def process_message(msg_value, redis_client, retry_handler, http_client):
     try:
         raw_msg = _decode_message(msg_value)
     except Exception:
@@ -86,8 +87,7 @@ async def process_message(msg_value, redis_client, retry_handler):
     query_payload = query.model_dump()
     
     try:
-        async with httpx.AsyncClient() as client:
-            r = await client.post(f"{RESPONSE_SERVICE_URL}/compute", json=query_payload, timeout=5.0)
+        r = await http_client.post(f"{RESPONSE_SERVICE_URL}/compute", json=query_payload, timeout=5.0)
         r.raise_for_status()
         
         latency_ms = (time.perf_counter() - start_time) * 1000
@@ -99,7 +99,8 @@ async def process_message(msg_value, redis_client, retry_handler):
             await send_metric(_metric("recovery", query.query_type, latency_ms, retry_count))
             logger.info(json.dumps({"event_type": "recovery", "query_type": query.query_type, "id": msg_id}))
             
-    except Exception:
+    except Exception as e:
+        logger.error(f"Error processing query {msg_id}: {e}", exc_info=True)
         failure_latency_ms = (time.perf_counter() - start_time) * 1000
         retry_count += 1
         await send_metric(_metric("retry", query.query_type, failure_latency_ms, retry_count))
@@ -139,12 +140,41 @@ async def run():
             auto_offset_reset="earliest",
             enable_auto_commit=False,
         )
-        await consumer.start()
-        consumer_started = True
+        retries = 10
+        for i in range(retries):
+            try:
+                await consumer.start()
+                consumer_started = True
+                break
+            except KafkaConnectionError as e:
+                logger.warning(f"Failed to connect to Kafka (attempt {i+1}/{retries}): {e}. Retrying in 5 seconds...")
+                if i < retries - 1:
+                    await asyncio.sleep(5)
+                else:
+                    raise
 
-        async for msg in consumer:
-            await process_message(msg.value.decode("utf-8"), redis_client, retry_handler)
-            await consumer.commit()
+        logger.info("Waiting for response-service and metrics-service to be ready...")
+        async with httpx.AsyncClient() as init_client:
+            for i in range(15):
+                try:
+                    r1 = await init_client.get(f"{RESPONSE_SERVICE_URL}/health", timeout=2.0)
+                    r1.raise_for_status()
+                    r2 = await init_client.get(f"{METRICS_SERVICE_URL}/health", timeout=2.0)
+                    r2.raise_for_status()
+                    logger.info("Dependent services are ready!")
+                    break
+                except Exception as exc:
+                    logger.warning(f"Services not ready yet (attempt {i+1}/15): {exc}. Retrying in 5 seconds...")
+                    if i < 14:
+                        await asyncio.sleep(5)
+                    else:
+                        logger.error("Dependent services failed to become ready.")
+                        raise
+
+        async with httpx.AsyncClient(limits=httpx.Limits(max_connections=100, max_keepalive_connections=20)) as http_client:
+            async for msg in consumer:
+                await process_message(msg.value.decode("utf-8"), redis_client, retry_handler, http_client)
+                await consumer.commit()
     except Exception as exc:
         logger.error("No se pudo iniciar el consumidor Kafka: %s", exc)
         raise

@@ -22,12 +22,22 @@ class QueryProducer:
     """Publica consultas en el tópico principal de Kafka."""
 
     def __init__(self):
-        self.producer = KafkaProducer(
-            bootstrap_servers=[KAFKA_BROKER],
-            value_serializer=lambda v: json.dumps(v).encode("utf-8"),
-            acks="all",  # Garantía de persistencia
-            retries=3,
-        )
+        retries_limit = 10
+        for i in range(retries_limit):
+            try:
+                self.producer = KafkaProducer(
+                    bootstrap_servers=[KAFKA_BROKER],
+                    value_serializer=lambda v: json.dumps(v).encode("utf-8"),
+                    acks="all",  # Garantía de persistencia
+                    retries=3,
+                )
+                break
+            except Exception as e:
+                logger.warning(f"Failed to connect to Kafka (attempt {i+1}/{retries_limit}): {e}. Retrying in 5 seconds...")
+                if i < retries_limit - 1:
+                    time.sleep(5)
+                else:
+                    raise
 
     def publish_query(self, query: QueryRequest, query_id: str, retry_count: int = 0) -> bool:
         """Publica una consulta en Kafka."""
