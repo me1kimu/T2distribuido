@@ -30,4 +30,4 @@ Servicios expuestos:
 - Kafka: `localhost:9092`
 - Redis: `localhost:6379`
 
-Vídeo de demostración: https://drive.google.com/file/d/
+Vídeo de demostración: https://drive.google.com/file/d/1L2hKs0VS7r5bKFVfquiCG_tKNTUALh6G/view?usp=sharing
