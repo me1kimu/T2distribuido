@@ -6,13 +6,23 @@ from src.consumer_config import METRICS_SERVICE_URL
 
 logger = logging.getLogger(__name__)
 
+_ALLOWED_METRICS_HOSTS = {"localhost", "127.0.0.1", "::1", "metrics-service"}
+
 
 def _build_metrics_events_url() -> str | None:
     parsed = urlparse(METRICS_SERVICE_URL)
-    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+    hostname = parsed.hostname
+
+    if parsed.scheme not in {"http", "https"} or not hostname:
         logger.warning("Invalid METRICS_SERVICE_URL configured: %s", METRICS_SERVICE_URL)
         return None
-    return f"{parsed.scheme}://{parsed.netloc}/events"
+
+    if hostname not in _ALLOWED_METRICS_HOSTS:
+        logger.warning("Disallowed METRICS_SERVICE_URL host configured: %s", hostname)
+        return None
+
+    netloc = hostname if parsed.port is None else f"{hostname}:{parsed.port}"
+    return f"{parsed.scheme}://{netloc}/events"
 
 
 async def send_metric(event: dict) -> None:
