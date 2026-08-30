@@ -9,16 +9,26 @@ logger = logging.getLogger(__name__)
 _ALLOWED_METRICS_HOSTS = {"localhost", "127.0.0.1", "::1", "metrics-service"}
 
 
+def _sanitize_for_log(value: str) -> str:
+    return value.replace("\r", "").replace("\n", "")
+
+
 def _build_metrics_events_url() -> str | None:
     parsed = urlparse(METRICS_SERVICE_URL)
     hostname = parsed.hostname
 
     if parsed.scheme not in {"http", "https"} or not hostname:
-        logger.warning("Invalid METRICS_SERVICE_URL configured: %s", METRICS_SERVICE_URL)
+        logger.warning(
+            "Invalid METRICS_SERVICE_URL configured: %s",
+            _sanitize_for_log(METRICS_SERVICE_URL),
+        )
         return None
 
     if hostname not in _ALLOWED_METRICS_HOSTS:
-        logger.warning("Disallowed METRICS_SERVICE_URL host configured: %s", hostname)
+        logger.warning(
+            "Disallowed METRICS_SERVICE_URL host configured: %s",
+            _sanitize_for_log(hostname),
+        )
         return None
 
     netloc = hostname if parsed.port is None else f"{hostname}:{parsed.port}"
@@ -41,8 +51,16 @@ async def send_metric(event: dict) -> None:
                     resp.text,
                 )
     except httpx.TimeoutException as exc:
-        logger.warning("Timeout sending metric to %s: %s", METRICS_SERVICE_URL, exc)
+        logger.warning(
+            "Timeout sending metric to %s: %s",
+            _sanitize_for_log(METRICS_SERVICE_URL),
+            exc,
+        )
     except httpx.RequestError as exc:
-        logger.warning("Request error sending metric to %s: %s", METRICS_SERVICE_URL, exc)
+        logger.warning(
+            "Request error sending metric to %s: %s",
+            _sanitize_for_log(METRICS_SERVICE_URL),
+            exc,
+        )
     except Exception:
         logger.exception("Unexpected error while sending metric")
