@@ -47,8 +47,8 @@ async def send_metric(event: dict) -> None:
                 logger.warning(
                     "Failed to send metric: status=%s url=%s body=%s",
                     resp.status_code,
-                    metrics_events_url,
-                    resp.text,
+                    _sanitize_for_log(metrics_events_url),
+                    _sanitize_for_log(resp.text),
                 )
     except httpx.TimeoutException as exc:
         logger.warning(
