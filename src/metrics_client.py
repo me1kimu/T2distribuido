@@ -7,6 +7,12 @@ from src.consumer_config import METRICS_SERVICE_URL
 logger = logging.getLogger(__name__)
 
 _ALLOWED_METRICS_HOSTS = {"localhost", "127.0.0.1", "::1", "metrics-service"}
+_METRICS_EVENTS_URL_BY_HOST = {
+    "localhost": "http://localhost:8001/events",
+    "127.0.0.1": "http://127.0.0.1:8001/events",
+    "::1": "http://[::1]:8001/events",
+    "metrics-service": "http://metrics-service:8001/events",
+}
 
 
 def _sanitize_for_log(value: str) -> str:
@@ -31,8 +37,7 @@ def _build_metrics_events_url() -> str | None:
         )
         return None
 
-    netloc = hostname if parsed.port is None else f"{hostname}:{parsed.port}"
-    return f"{parsed.scheme}://{netloc}/events"
+    return _METRICS_EVENTS_URL_BY_HOST.get(hostname)
 
 
 async def send_metric(event: dict) -> None:
