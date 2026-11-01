@@ -5,6 +5,7 @@ import json
 import os
 import time
 from functools import partial
+from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 import redis
@@ -19,7 +20,28 @@ redis_client: redis.Redis | None = None
 response_client: httpx.AsyncClient | None = None
 metrics_client: httpx.AsyncClient | None = None
 response_service_url = os.getenv("RESPONSE_SERVICE_URL", "http://localhost:8002")
-metrics_service_url = os.getenv("METRICS_SERVICE_URL", "http://localhost:8001")
+
+
+def _safe_metrics_service_url_from_env() -> str:
+    default_url = "http://localhost:8001"
+    raw_url = os.getenv("METRICS_SERVICE_URL", default_url)
+    try:
+        parsed = urlsplit(raw_url)
+        if parsed.scheme not in {"http", "https"}:
+            return default_url
+        if not parsed.hostname:
+            return default_url
+        if parsed.username is not None or parsed.password is not None:
+            return default_url
+        if parsed.query or parsed.fragment:
+            return default_url
+        normalized = urlunsplit((parsed.scheme, parsed.netloc, parsed.path.rstrip("/"), "", ""))
+        return normalized or default_url
+    except Exception:
+        return default_url
+
+
+metrics_service_url = _safe_metrics_service_url_from_env()
 # TTL de cache en segundos para respuestas precargadas.
 cache_ttl_seconds = int(os.getenv("CACHE_TTL", "120"))
 _last_evicted_keys = 0
