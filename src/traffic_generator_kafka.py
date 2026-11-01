@@ -83,7 +83,11 @@ def run(requests_n: int, distribution: str, sleep_ms: int, seed: int) -> None:
         logger.error("No se pudo conectar a Kafka en %s: %s", KAFKA_BROKER, exc)
         return
 
-    logger.info("Publicando %d consultas en tópico '%s'", requests_n, _sanitize_for_log(KAFKA_TOPIC))
+    logger.info(
+        "Publicando %s consultas en tópico '%s'",
+        _sanitize_for_log(str(requests_n)),
+        _sanitize_for_log(KAFKA_TOPIC),
+    )
 
     sent = 0
     errors = 0
