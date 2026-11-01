@@ -20,6 +20,11 @@ KAFKA_BROKER = os.getenv("KAFKA_BROKER", "kafka:9092")
 KAFKA_TOPIC = os.getenv("KAFKA_TOPIC_QUERIES", "queries")
 
 
+def _sanitize_for_log(value: str) -> str:
+    """Evita inyección en logs eliminando saltos de línea y retorno de carro."""
+    return value.replace("\r", "\\r").replace("\n", "\\n")
+
+
 def _pick_zone(distribution: str, rng: random.Random) -> str:
     """Selecciona zona con distribución uniforme o Zipf."""
     zone_ids = list(ZONES.keys())
@@ -78,7 +83,7 @@ def run(requests_n: int, distribution: str, sleep_ms: int, seed: int) -> None:
         logger.error("No se pudo conectar a Kafka en %s: %s", KAFKA_BROKER, exc)
         return
 
-    logger.info("Publicando %d consultas en tópico '%s'", requests_n, KAFKA_TOPIC)
+    logger.info("Publicando %d consultas en tópico '%s'", requests_n, _sanitize_for_log(KAFKA_TOPIC))
 
     sent = 0
     errors = 0
